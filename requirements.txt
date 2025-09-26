@@ -3,10 +3,12 @@ torch>=2.0
 torchvision>=0.15
 opencv-python<4.12
 pillow
-matplotlib
+matplotlib=3.5.1
 albucore
 simsimd
 stringzilla
+pandas=2.3.2
+openpyxl=3.1.5
 numpy>=1.26,<2.0
 opencv-python<4.12
 torch>=2.0
