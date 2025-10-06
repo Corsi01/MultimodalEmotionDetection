@@ -1,0 +1,16 @@
+numpy>=1.26,<2.0
+torch>=2.0
+torchvision>=0.15
+opencv-python<4.12
+pillow
+matplotlib
+albucore
+simsimd
+stringzilla
+numpy>=1.26,<2.0
+opencv-python<4.12
+torch>=2.0
+# For CUDA 12.1, torch 2.x supports CUDA 12.x
+# You may need to specify the correct torch version for CUDA 12.1:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+torchvision>=0.15

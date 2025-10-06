@@ -6,7 +6,6 @@ from facedet_utils import (batched_nms_numpy, bbreg, generateBoundingBox, imresa
                           pad, rerec)
 
 
-
 class PNet(nn.Module):
     """MTCNN PNet."""
 
@@ -123,21 +122,11 @@ class ONet(nn.Module):
 
 
 class MTCNN(nn.Module):
-    """MTCNN face detection module. This class loads pretrained P-, R-, and
-    O-nets and returns images cropped to include the face only, given raw input
-    images of one of the following types:
-
-    - PIL image or list of PIL images
-    - numpy.ndarray (uint8) representing either a single image (3D) or \
-        a batch of images (4D).
-    """
-
     def __init__(self,
                  min_face_size=20,
                  thresholds=[0.6, 0.7, 0.7],
                  factor=0.709):
         super().__init__()
-
         self.min_face_size = min_face_size
         self.thresholds = thresholds
         self.factor = factor
@@ -147,31 +136,24 @@ class MTCNN(nn.Module):
         self.onet = ONet()
 
     def forward(self, imgs):
-        """
-        Args:
-            imgs: torch tensor
-        """
         batch_size, _, h, w = imgs.shape
         m = 12.0 / self.min_face_size
         minl = min(h, w)
         minl = minl * m
 
-        # Create scale pyramid
-        scale_i = m
         scales = []
+        scale_i = m
         while minl >= 12:
             scales.append(scale_i)
-            scale_i = scale_i * self.factor
-            minl = minl * self.factor
+            scale_i *= self.factor
+            minl *= self.factor
 
-        # First stage
         boxes = []
         image_inds = []
         all_inds = []
         all_i = 0
         for scale in scales:
-            im_data = imresample(imgs,
-                                 (int(h * scale + 1), int(w * scale + 1)))
+            im_data = imresample(imgs, (int(h * scale + 1), int(w * scale + 1)))
             with torch.no_grad():
                 reg, probs = self.pnet(im_data)
 
@@ -186,17 +168,15 @@ class MTCNN(nn.Module):
             return np.array([]), np.array([])
 
         boxes = torch.cat(boxes, dim=0)
-        image_inds = torch.cat(image_inds, dim=0).cpu()
-        all_inds = torch.cat(all_inds, dim=0)
+        image_inds = torch.cat(image_inds, dim=0).to(boxes.device)
+        all_inds = torch.cat(all_inds, dim=0).to(boxes.device)
 
-        # NMS within each scale + image
+        # --- First NMS ---
         pick = batched_nms(boxes[:, :4], boxes[:, 4], all_inds, 0.5)
-        pick = pick.to(boxes.device)
         boxes, image_inds = boxes[pick], image_inds[pick]
 
-        # NMS within each image
+        # --- Second NMS ---
         pick = batched_nms(boxes[:, :4], boxes[:, 4], image_inds, 0.7)
-        pick = pick.to(boxes.device)
         boxes, image_inds = boxes[pick], image_inds[pick]
 
         regw = boxes[:, 2] - boxes[:, 0]
@@ -204,18 +184,17 @@ class MTCNN(nn.Module):
         qq1 = boxes[:, 0] + boxes[:, 5] * regw
         qq2 = boxes[:, 1] + boxes[:, 6] * regh
         qq3 = boxes[:, 2] + boxes[:, 7] * regw
-        qq4 = boxes[:, 3] + boxes[:, 8] * regw
+        qq4 = boxes[:, 3] + boxes[:, 8] * regh
         boxes = torch.stack([qq1, qq2, qq3, qq4, boxes[:, 4]]).permute(1, 0)
         boxes = rerec(boxes)
         y, ey, x, ex = pad(boxes, w, h)
 
-        # Second stage
+        # --- Second stage (RNet) ---
         if len(boxes) > 0:
             im_data = []
             for k in range(len(y)):
                 if ey[k] > (y[k] - 1) and ex[k] > (x[k] - 1):
-                    img_k = imgs[image_inds[k], :, (y[k] - 1):ey[k],
-                                 (x[k] - 1):ex[k]].unsqueeze(0)
+                    img_k = imgs[image_inds[k], :, (y[k] - 1):ey[k], (x[k] - 1):ex[k]].unsqueeze(0)
                     im_data.append(imresample(img_k, (24, 24)))
             if len(im_data) > 0:
                 im_data = torch.cat(im_data, dim=0)
@@ -226,27 +205,23 @@ class MTCNN(nn.Module):
                 out1 = out[1].permute(1, 0)
                 score = out1[1, :]
                 ipass = score > self.thresholds[1]
-                boxes = torch.cat((boxes[ipass, :4], score[ipass].unsqueeze(1)),
-                                  dim=1)
+                boxes = torch.cat((boxes[ipass, :4], score[ipass].unsqueeze(1)), dim=1)
                 image_inds = image_inds[ipass]
                 mv = out0[:, ipass].permute(1, 0)
 
-                # NMS within each image
                 pick = batched_nms(boxes[:, :4], boxes[:, 4], image_inds, 0.7)
-                pick = pick.to(boxes.device)
                 boxes, image_inds, mv = boxes[pick], image_inds[pick], mv[pick]
                 boxes = bbreg(boxes, mv)
                 boxes = rerec(boxes)
 
-        # Third stage
+        # --- Third stage (ONet) ---
         points = torch.zeros(0, 5, 2, device=imgs.device)
         if len(boxes) > 0:
             y, ey, x, ex = pad(boxes, w, h)
             im_data = []
             for k in range(len(y)):
                 if ey[k] > (y[k] - 1) and ex[k] > (x[k] - 1):
-                    img_k = imgs[image_inds[k], :, (y[k] - 1):ey[k],
-                                 (x[k] - 1):ex[k]].unsqueeze(0)
+                    img_k = imgs[image_inds[k], :, (y[k] - 1):ey[k], (x[k] - 1):ex[k]].unsqueeze(0)
                     im_data.append(imresample(img_k, (48, 48)))
             if len(im_data) > 0:
                 im_data = torch.cat(im_data, dim=0)
@@ -260,36 +235,32 @@ class MTCNN(nn.Module):
                 points = out1
                 ipass = score > self.thresholds[2]
                 points = points[:, ipass]
-                boxes = torch.cat((boxes[ipass, :4], score[ipass].unsqueeze(1)),
-                                  dim=1)
+                boxes = torch.cat((boxes[ipass, :4], score[ipass].unsqueeze(1)), dim=1)
                 image_inds = image_inds[ipass]
                 mv = out0[:, ipass].permute(1, 0)
 
                 w_i = boxes[:, 2] - boxes[:, 0] + 1
                 h_i = boxes[:, 3] - boxes[:, 1] + 1
-                points_x = w_i.repeat(5, 1) * points[:5, :] + boxes[:, 0].repeat(
-                    5, 1) - 1
-                points_y = h_i.repeat(5, 1) * points[5:10, :] + boxes[:, 1].repeat(
-                    5, 1) - 1
+                points_x = w_i.repeat(5, 1) * points[:5, :] + boxes[:, 0].repeat(5, 1) - 1
+                points_y = h_i.repeat(5, 1) * points[5:10, :] + boxes[:, 1].repeat(5, 1) - 1
                 points = torch.stack((points_x, points_y)).permute(2, 1, 0)
                 boxes = bbreg(boxes, mv)
 
-                # NMS within each image using "Min" strategy
-                pick = batched_nms_numpy(boxes[:, :4], boxes[:, 4], image_inds,
-                                         0.7, 'Min')
+                # ultimo NMS con versione numpy
+                pick = batched_nms_numpy(boxes[:, :4], boxes[:, 4], image_inds, 0.7, 'Min')
                 if isinstance(pick, torch.Tensor):
                     pick = pick.to(boxes.device)
                 boxes, image_inds, points = boxes[pick], image_inds[pick], points[pick]
 
+        # riportiamo solo all'uscita su CPU/numpy
         boxes = boxes.cpu().numpy()
         points = points.cpu().numpy()
 
         batch_boxes = []
         batch_points = []
         for b_i in range(batch_size):
-            b_i_inds = np.where(image_inds == b_i)
+            b_i_inds = np.where(image_inds.cpu().numpy() == b_i)
             batch_boxes.append(boxes[b_i_inds].copy())
             batch_points.append(points[b_i_inds].copy())
 
-        batch_boxes, batch_points = np.array(batch_boxes), np.array(batch_points)
-        return batch_boxes, batch_points
+        return np.array(batch_boxes), np.array(batch_points)
